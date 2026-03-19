@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>cursors</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link
+            href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400&display=swap"
+            rel="stylesheet"
+        >
+        <style>
+            *, *::before, *::after {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            :root {
+                --bg: #111110;
+                --hud-bg: rgba(20, 20, 19, 0.75);
+                --hud-border: rgba(255, 255, 255, 0.07);
+                --text-dim: rgba(255, 255, 255, 0.3);
+                --text: rgba(255, 255, 255, 0.85);
+            }
+
+            html, body {
+                width: 100%;
+                height: 100%;
+                background: var(--bg);
+                overflow: hidden;
+                cursor: none;
+                font-family: "DM Mono", monospace;
+            }
+
+            canvas {
+                position: fixed;
+                inset: 0;
+                pointer-events: none;
+            }
+            #lights {
+                mix-blend-mode: screen;
+            }
+
+            .cursor {
+                position: fixed;
+                pointer-events: none;
+                top: 0;
+                left: 0;
+                will-change: transform;
+                transition: opacity 0.4s;
+            }
+            .cursor-label {
+                position: absolute;
+                left: 18px;
+                top: 6px;
+                font-size: 10px;
+                letter-spacing: 0.08em;
+                white-space: nowrap;
+                padding: 3px 7px;
+                border-radius: 2px;
+                opacity: 0.9;
+            }
+
+            #self {
+                position: fixed;
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: #fff;
+                transform: translate(-50%, -50%);
+                pointer-events: none;
+                z-index: 200;
+                box-shadow:
+                    0 0 0 1.5px rgba(255, 255, 255, 0.25),
+                    0 0 12px rgba(255, 255, 255, 0.4);
+            }
+            #self::after {
+                content: "";
+                position: absolute;
+                inset: -5px;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 50%;
+            }
+
+            #hud {
+                position: fixed;
+                bottom: 28px;
+                left: 28px;
+                background: var(--hud-bg);
+                border: 1px solid var(--hud-border);
+                backdrop-filter: blur(16px);
+                padding: 14px 18px;
+                border-radius: 6px;
+                font-size: 11px;
+                letter-spacing: 0.06em;
+                color: var(--text-dim);
+                line-height: 2;
+                z-index: 300;
+            }
+            #hud span {
+                color: var(--text);
+            }
+
+            .shockwave {
+                position: fixed;
+                border-radius: 50%;
+                pointer-events: none;
+                z-index: 198;
+                transform: translate(-50%, -50%) scale(0);
+                animation: shock 600ms cubic-bezier(0.2, 0.8, 0.4, 1)
+                    forwards;
+            }
+            @keyframes shock {
+                0% {
+                    transform: translate(-50%, -50%) scale(0);
+                    opacity: 0.65;
+                }
+                100% {
+                    transform: translate(-50%, -50%) scale(1);
+                    opacity: 0;
+                }
+            }
+
+            @media (hover: none) {
+                #self {
+                    display: none;
+                }
+                html, body {
+                    cursor: auto;
+                }
+            }
+
+            body {
+                animation: fadein 0.6s ease both;
+            }
+            @keyframes fadein {
+                from { opacity: 0; }
+                to   { opacity: 1; }
+            }
+        </style>
+    </head>
+    <body>
+        <canvas id="grid"></canvas>
+        <canvas id="lights"></canvas>
+        <canvas id="trails"></canvas>
+        <div id="self"></div>
+        <div id="hud">
+            status &nbsp;— <span id="status">connecting</span><br>
+            latency — <span id="latency">--</span> ms<br>
+            peers &nbsp;&nbsp;— <span id="peers">0</span>
+        </div>
+
+        <script>
+            (() => {
+                const COLORS = [
+                    "#ff6b6b", "#ffd93d", "#6bcb77", "#4ecdc4",
+                    "#a78bfa", "#f9a8d4", "#60a5fa", "#fb923c",
+                ];
+                const col = (id) => COLORS[((id * 2654435761) >>> 0) % COLORS.length];
+
+                const $ = (id) => document.getElementById(id);
+                const gc = $("grid").getContext("2d");
+                const lc = $("lights").getContext("2d");
+                const tc = $("trails").getContext("2d");
+                const canvases = [$("grid"), $("lights"), $("trails")];
+
+                const DOT_SPACING       = 28;
+                const PUSH_RADIUS       = 90,  PUSH_FORCE = 0.38;
+                const SPRING            = 0.12, DAMPEN     = 0.72;
+                const LIGHT_RADIUS      = 160;
+                const TRAIL_LEN         = 30;
+                const FADE_TRAIL_DURATION = 6000;                const PEER_TIMEOUT_MS   = 5000;
+                let W, H, dots = [];
+
+                function resize() {
+                    W = window.innerWidth;
+                    H = window.innerHeight;
+                    canvases.forEach((c) => { c.width = W; c.height = H; });
+                    dots = [];
+                    for (let r = 0; r <= Math.ceil(H / DOT_SPACING); r++) {
+                        for (let c = 0; c <= Math.ceil(W / DOT_SPACING); c++) {
+                            dots.push({
+                                bx: c * DOT_SPACING, by: r * DOT_SPACING,
+                                x:  c * DOT_SPACING, y:  r * DOT_SPACING,
+                                bright: 0, vx: 0, vy: 0,
+                            });
+                        }
+                    }
+                }
+
+                const ghostTrails = [];
+
+                const peers = new Map();
+                let selfX = -300, selfY = -300;
+
+                function spawnShockwave(x, y, color) {
+                    [0, 80, 160].forEach((delay, i) => {
+                        const size = 120 + i * 60;
+                        const el = document.createElement("div");
+                        el.className = "shockwave";
+                        el.style.cssText =
+                            `left:${x}px;top:${y}px;width:${size}px;height:${size}px;` +
+                            `border:${1.5 - i * 0.4}px solid ${color};` +
+                            `animation-delay:${delay}ms;animation-duration:${500 + i * 120}ms;`;
+                        document.body.appendChild(el);
+                        setTimeout(() => el.remove(), delay + 750);
+                    });
+                    for (const d of dots) {
+                        const dist = Math.hypot(d.bx - x, d.by - y);
+                        if (dist > 0 && dist < 200) {
+                            const s = (1 - dist / 200) * 6;
+                            d.vx += (d.bx - x) / dist * s;
+                            d.vy += (d.by - y) / dist * s;
+                        }
+                    }
+                }
+
+                function explodePeer(p) {
+                    if (p.trail.length > 1) {
+                        ghostTrails.push({
+                            points: [...p.trail],
+                            color: p.color,
+                            born: performance.now(),
+                        });
+                    }
+                    spawnShockwave(p.x, p.y, p.color);
+                    for (const d of dots) {
+                        const dist = Math.hypot(d.bx - p.x, d.by - p.y);
+                        if (dist > 0 && dist < 260) {
+                            const s = (1 - dist / 260) * 9;
+                            d.vx += (d.bx - p.x) / dist * s;
+                            d.vy += (d.by - p.y) / dist * s;
+                        }
+                    }
+                }
+
+                function setPos(x, y) {
+                    selfX = x;
+                    selfY = y;
+                    $("self").style.left = x + "px";
+                    $("self").style.top  = y + "px";
+                }
+
+                document.addEventListener("mousemove", (e) => setPos(e.clientX, e.clientY));
+                document.addEventListener("click", (e) => spawnShockwave(e.clientX, e.clientY, "#ffffff"));
+                document.addEventListener("touchstart", (e) => {
+                    const t = e.touches[0];
+                    setPos(t.clientX, t.clientY);
+                    spawnShockwave(t.clientX, t.clientY, "#ffffff");
+                }, { passive: true });
+                document.addEventListener("touchmove", (e) => {
+                    setPos(e.touches[0].clientX, e.touches[0].clientY);
+                }, { passive: true });
+
+                function getPeer(id) {
+                    if (!peers.has(id)) {
+                        const color = col(id);
+                        const el = document.createElement("div");
+                        el.className = "cursor";
+                        el.innerHTML =
+                            `<svg width="22" height="26" viewBox="0 0 22 26" fill="none">` +
+                            `<path d="M4 2L18 12L11 14L8 22L4 2Z" fill="${color}" fill-opacity=".92" stroke="${color}" stroke-width="1" stroke-opacity=".5"/>` +
+                            `</svg>` +
+                            `<div class="cursor-label" style="background:${color}22;color:${color};border:1px solid ${color}44">` +
+                            `_${id.toString().padStart(3, "0")}` +
+                            `</div>`;
+                        document.body.appendChild(el);
+                        peers.set(id, {
+                            x: -300, y: -300,
+                            tx: -300, ty: -300,
+                            color, trail: [], el,
+                            lastSeen: performance.now(),
+                        });
+                    }
+                    return peers.get(id);
+                }
+
+                function removePeer(id) {
+                    const p = peers.get(id);
+                    if (!p) return;
+                    explodePeer(p);
+                    p.el.style.opacity = "0";
+                    setTimeout(() => p.el.remove(), 400);
+                    peers.delete(id);
+                    $("peers").textContent = peers.size;
+                }
+
+                function evictStalePeers() {
+                    const cutoff = performance.now() - PEER_TIMEOUT_MS;
+                    for (const [id, p] of peers) {
+                        if (p.lastSeen < cutoff) {
+                            removePeer(id);
+                        }
+                    }
+                }
+                setInterval(evictStalePeers, 1000);
+
+                function hexA(hex, a) {
+                    return `rgba(${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)},${a})`;
+                }
+
+                function allCursors() {
+                    const list = [{ x: selfX, y: selfY, color: "#ffffff" }];
+                    for (const [, p] of peers) list.push({ x: p.x, y: p.y, color: p.color });
+                    return list;
+                }
+
+                function frame() {
+                    requestAnimationFrame(frame);
+                    const cursors = allCursors();
+                    const now = performance.now();
+
+                    for (const [, p] of peers) {
+                        p.x += (p.tx - p.x) * 0.18;
+                        p.y += (p.ty - p.y) * 0.18;
+                        p.el.style.transform = `translate(${p.x - 2}px,${p.y - 2}px)`;
+                        p.trail.push({ x: p.x, y: p.y });
+                        if (p.trail.length > TRAIL_LEN) p.trail.shift();
+                    }
+
+                    for (const d of dots) {
+                        let fx = 0, fy = 0, maxBright = 0;
+                        for (const cur of cursors) {
+                            const dx = d.bx - cur.x, dy = d.by - cur.y;
+                            const dist = Math.hypot(dx, dy);
+                            if (dist < LIGHT_RADIUS) {
+                                const b = (1 - dist / LIGHT_RADIUS) ** 2;
+                                if (b > maxBright) maxBright = b;
+                            }
+                            if (dist > 0 && dist < PUSH_RADIUS) {
+                                const s = (1 - dist / PUSH_RADIUS) * PUSH_FORCE;
+                                fx += dx / dist * s;
+                                fy += dy / dist * s;
+                            }
+                        }
+                        d.vx = (d.vx + fx + (d.bx - d.x) * SPRING) * DAMPEN;
+                        d.vy = (d.vy + fy + (d.by - d.y) * SPRING) * DAMPEN;
+                        d.x += d.vx;
+                        d.y += d.vy;
+                        d.bright += (maxBright - d.bright) * 0.15;
+                    }
+
+                    gc.clearRect(0, 0, W, H);
+                    for (const d of dots) {
+                        gc.beginPath();
+                        gc.arc(d.x, d.y, 1.4 + d.bright * 1.6, 0, Math.PI * 2);
+                        gc.fillStyle = `rgba(255,255,255,${0.13 + d.bright * 0.72})`;
+                        gc.fill();
+                    }
+
+                    tc.clearRect(0, 0, W, H);
+                    for (const [, p] of peers) drawTrail(p.trail, p.color, 1);
+                    for (let i = ghostTrails.length - 1; i >= 0; i--) {
+                        const g = ghostTrails[i];
+                        const opacity = Math.max(0, 1 - (now - g.born) / FADE_TRAIL_DURATION);
+                        if (opacity <= 0) { ghostTrails.splice(i, 1); continue; }
+                        drawTrail(g.points, g.color, opacity);
+                    }
+                    tc.globalAlpha = 1;
+
+                    lc.clearRect(0, 0, W, H);
+                    for (const cur of cursors) {
+                        if (cur.x < -200) continue;
+                        const g = lc.createRadialGradient(cur.x, cur.y, 0, cur.x, cur.y, LIGHT_RADIUS * 1.1);
+                        g.addColorStop(0,   hexA(cur.color, 0.06));
+                        g.addColorStop(0.4, hexA(cur.color, 0.03));
+                        g.addColorStop(1,   hexA(cur.color, 0));
+                        lc.beginPath();
+                        lc.arc(cur.x, cur.y, LIGHT_RADIUS * 1.1, 0, Math.PI * 2);
+                        lc.fillStyle = g;
+                        lc.fill();
+                    }
+                }
+
+                function drawTrail(points, color, masterAlpha) {
+                    if (points.length < 2) return;
+                    tc.strokeStyle = color;
+                    tc.lineCap = "round";
+                    tc.lineJoin = "round";
+
+                    for (let i = 0; i < points.length - 1; i++) {
+                        const p0 = points[Math.max(i - 1, 0)];
+                        const p1 = points[i];
+                        const p2 = points[i + 1];
+                        const p3 = points[Math.min(i + 2, points.length - 1)];
+
+                        const prog = (i + 1) / points.length;
+                        tc.globalAlpha = prog * 0.4 * masterAlpha;
+                        tc.lineWidth   = prog * 2.8;
+
+                        const steps = 6;
+                        tc.beginPath();
+                        tc.moveTo(p1.x, p1.y);
+                        for (let s = 1; s <= steps; s++) {
+                            const t = s / steps, t2 = t * t, t3 = t2 * t;
+                            const x = 0.5 * (
+                                (2 * p1.x) +
+                                (-p0.x + p2.x) * t +
+                                (2*p0.x - 5*p1.x + 4*p2.x - p3.x) * t2 +
+                                (-p0.x + 3*p1.x - 3*p2.x + p3.x) * t3
+                            );
+                            const y = 0.5 * (
+                                (2 * p1.y) +
+                                (-p0.y + p2.y) * t +
+                                (2*p0.y - 5*p1.y + 4*p2.y - p3.y) * t2 +
+                                (-p0.y + 3*p1.y - 3*p2.y + p3.y) * t3
+                            );
+                            tc.lineTo(x, y);
+                        }
+                        tc.stroke();
+                    }
+                    tc.globalAlpha = 1;
+                }
+
+                window.addEventListener("resize", resize);
+                resize();
+                frame();
+
+                (async () => {
+                    try {
+                        const transport = new WebTransport(
+                            "https://webtransportdemo.duckdns.org/wt",
+                        );
+                        await transport.ready;
+                        $("status").textContent = "connected";
+                        transport.closed.then(() => $("status").textContent = "disconnected");
+
+                        const writer = transport.datagrams.writable.getWriter();
+                        const reader = transport.datagrams.readable.getReader();
+
+                        setInterval(() => {
+                            const buf = new ArrayBuffer(5);
+                            const v = new DataView(buf);
+                            v.setUint8(0, 0x01);
+                            v.setUint16(1, Math.max(0, selfX));
+                            v.setUint16(3, Math.max(0, selfY));
+                            writer.write(new Uint8Array(buf));
+                        }, 33);
+
+                        setInterval(() => {
+                            const buf = new ArrayBuffer(9);
+                            const v = new DataView(buf);
+                            v.setUint8(0, 0x02);
+                            v.setFloat64(1, performance.now());
+                            writer.write(new Uint8Array(buf));
+                        }, 1000);
+
+                        while (true) {
+                            const { value, done } = await reader.read();
+                            if (done) break;
+                            const v = new DataView(value.buffer);
+                            const type = v.getUint8(0);
+
+                            if (type === 0x02 && value.buffer.byteLength >= 9) {
+                                $("latency").textContent = Math.round(
+                                    (performance.now() - v.getFloat64(1)) / 2,
+                                );
+                            } else if (type === 0x01 && value.buffer.byteLength >= 7) {
+                                const id = v.getUint16(1);                                const p  = getPeer(id);
+                                p.tx = v.getUint16(3);
+                                p.ty = v.getUint16(5);
+                                p.lastSeen = performance.now();
+                                $("peers").textContent = peers.size;
+                            } else if (type === 0xFF && value.buffer.byteLength >= 3) {
+                                removePeer(v.getUint16(1));
+                            }
+                        }
+                    } catch (err) {
+                        console.error(err);
+                        $("status").textContent = "failed";
+                    }
+                })();
+            })();
+        </script>
+    </body>
+</html>
