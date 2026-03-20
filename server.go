@@ -5,12 +5,14 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"fmt"
+	"crypto/tls"
+	"encoding/hex"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -86,7 +88,6 @@ func buildCache(root string) error {
 		ct := mimeFor(path)
 
 		if ct == "application/javascript; charset=utf-8" || ct == "text/css; charset=utf-8" {
-			// Strip the charset parameter — minify expects bare media types.
 			mediaType := strings.SplitN(ct, ";", 2)[0]
 			if minified, err := minifier.Bytes(mediaType, data); err == nil {
 				data = minified
@@ -111,10 +112,9 @@ func buildCache(root string) error {
 		cf := &cachedFile{
 			plain:       data,
 			gzipped:     gz,
-			etag:        fmt.Sprintf(`"%x"`, sum[:8]),
+			etag:        `"` + hex.EncodeToString(sum[:8]) + `"`,
 			contentType: ct,
 		}
-
 		rel, _ := filepath.Rel(filepath.Dir(root), path)
 		urlPath := "/" + filepath.ToSlash(rel)
 		fileCache[urlPath] = cf
@@ -148,7 +148,7 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 		h.Set("Vary", "Accept-Encoding")
 		body = cf.gzipped
 	}
-	h.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.Write(body)
 }
 
@@ -304,17 +304,15 @@ func main() {
 		CheckOrigin: func(*http.Request) bool { return true },
 	}
 	webtransport.ConfigureHTTP3Server(wtServer.H3)
-
 	go func() { log.Fatal(http.ListenAndServe(":80", certManager.HTTPHandler(nil))) }()
+	tcpLn, err := tls.Listen("tcp", ":443", h3TLS)
+	if err != nil {
+		log.Fatal("tcp listen:", err)
+	}
 	go func() {
-		s := &http.Server{
-			Addr:      ":443",
-			TLSConfig: certManager.TLSConfig(),
-			Handler:   addAltSvc(mux),
-		}
-		log.Fatal(s.ListenAndServeTLS("", ""))
+		s := &http.Server{Handler: addAltSvc(mux)}
+		log.Fatal(s.Serve(tcpLn))
 	}()
-
 	log.Printf("Listening on https://%s", domain)
 	log.Fatal(wtServer.ListenAndServe())
 }
