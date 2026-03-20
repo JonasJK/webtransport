@@ -5,7 +5,6 @@ latency than WebSockets.
 
 **[→ Try it live](https://webtransportdemo.duckdns.org/)**
 
-<script src="https://cdn.jsdelivr.net/gh/ireade/caniuse-embed/public/caniuse-embed.min.js"></script>
 <p class="ciu_embed" data-feature="webtransport" data-periods="future_1,current,past_1,past_2" data-accessible-colours="false">
   <picture>
     <source type="image/webp" srcset="https://caniuse.bitsofco.de/image/webtransport.webp">
