@@ -133,7 +133,15 @@ func serveFile(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/static/") {
 		dest := strings.ToLower(r.Header.Get("Sec-Fetch-Dest"))
 		mode := strings.ToLower(r.Header.Get("Sec-Fetch-Mode"))
-		if dest == "document" || mode == "navigate" {
+		accept := strings.ToLower(r.Header.Get("Accept"))
+		fetchUser := r.Header.Get("Sec-Fetch-User")
+		isDocNav := dest == "document" ||
+			mode == "navigate" ||
+			fetchUser == "?1" ||
+			strings.Contains(accept, "text/html") ||
+			strings.Contains(accept, "application/xhtml+xml")
+
+		if isDocNav {
 			http.NotFound(w, r)
 			return
 		}
