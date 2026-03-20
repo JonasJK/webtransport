@@ -604,8 +604,23 @@
                                 const buf = new ArrayBuffer(5);
                                 const v = new DataView(buf);
                                 v.setUint8(0, 0x01);
-                                v.setUint16(1, selfX);
-                                v.setUint16(3, selfY);
+                                v.setUint16(
+                                    1,
+                                    Math.round(
+                                        (selfX /
+                                            window.innerWidth) *
+                                            65535,
+                                    ),
+                                );
+                                v.setUint16(
+                                    3,
+                                    Math.round(
+                                        (selfY /
+                                            window
+                                                .innerHeight) *
+                                            65535,
+                                    ),
+                                );
                                 writer.write(
                                     new Uint8Array(buf),
                                 ).catch(() => {});
@@ -663,8 +678,12 @@
                                             1,
                                         );
                                         const p = getPeer(id);
-                                        p.tx = v.getUint16(3);
-                                        p.ty = v.getUint16(5);
+                                        p.tx = (v.getUint16(3) /
+                                            65535) *
+                                            window.innerWidth;
+                                        p.ty = (v.getUint16(5) /
+                                            65535) *
+                                            window.innerHeight;
                                         p.lastSeen = performance
                                             .now();
                                         $("peers").textContent =
