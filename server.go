@@ -24,6 +24,7 @@ import (
 	"github.com/tdewolff/minify/v2/css"
 	"github.com/tdewolff/minify/v2/js"
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/websocket"
 )
 
 const (
@@ -261,6 +262,20 @@ func main() {
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.Handle("/ws", websocket.Handler(func(conn *websocket.Conn) {
+		conn.PayloadType = websocket.BinaryFrame
+		buf := make([]byte, 512)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err = conn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}))
+
 	mux.HandleFunc("/wt", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("/wt hit: method=%s proto=%s", r.Method, r.Proto)
 

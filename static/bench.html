@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WS vs WT Latency</title>
+<link rel="stylesheet" href="/static/bench.css">
+</head>
+<body>
+
+<header>
+  <h1><span class="ws">WebSocket</span><span class="vs">vs</span><span class="wt">WebTransport</span></h1>
+</header>
+
+<div class="config">
+  <label>WebSocket URL
+    <input id="wsUrl" type="text" value="wss://webtransportdemo.duckdns.org/ws" />
+  </label>
+  <label>WebTransport URL
+    <input id="wtUrl" type="text" value="https://webtransportdemo.duckdns.org/wt" />
+  </label>
+</div>
+
+<div class="config-row">
+  <label>Pings<input id="pingCount" type="number" value="100" min="10" max="2000" /></label>
+  <label>Interval (ms)<input id="pingInterval" type="number" value="50" min="10" max="5000" /></label>
+</div>
+
+<div class="buttons">
+  <button id="btnRun">Run Benchmark</button>
+  <button id="btnStop">Stop</button>
+</div>
+
+<p class="status" id="status">configure endpoints and press run</p>
+
+<div class="stats-grid">
+  <div class="stat-panel ws">
+    <h2>WebSocket</h2>
+    <div class="big-num" id="wsAvg">—<span>ms</span></div>
+    <div class="sub-stats">
+      <div class="sub-stat"><div class="label">min</div><div class="val" id="wsMin">—</div></div>
+      <div class="sub-stat"><div class="label">max</div><div class="val" id="wsMax">—</div></div>
+      <div class="sub-stat"><div class="label">p95</div><div class="val" id="wsP95">—</div></div>
+      <div class="sub-stat"><div class="label">stddev</div><div class="val" id="wsStd">—</div></div>
+      <div class="sub-stat"><div class="label">lost</div><div class="val" id="wsLost">—</div></div>
+      <div class="sub-stat"><div class="label">done</div><div class="val" id="wsDone">—</div></div>
+    </div>
+  </div>
+  <div class="stat-panel wt">
+    <h2>WebTransport</h2>
+    <div class="big-num" id="wtAvg">—<span>ms</span></div>
+    <div class="sub-stats">
+      <div class="sub-stat"><div class="label">min</div><div class="val" id="wtMin">—</div></div>
+      <div class="sub-stat"><div class="label">max</div><div class="val" id="wtMax">—</div></div>
+      <div class="sub-stat"><div class="label">p95</div><div class="val" id="wtP95">—</div></div>
+      <div class="sub-stat"><div class="label">stddev</div><div class="val" id="wtStd">—</div></div>
+      <div class="sub-stat"><div class="label">lost</div><div class="val" id="wtLost">—</div></div>
+      <div class="sub-stat"><div class="label">done</div><div class="val" id="wtDone">—</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="chart-wrap">
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:var(--ws)"></div>websocket</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--wt)"></div>webtransport</div>
+  </div>
+  <div class="chart-label">latency per ping (ms)</div>
+  <canvas id="chart"></canvas>
+</div>
+
+<script src="/static/bench.js"></script>
+</body>
+</html>
