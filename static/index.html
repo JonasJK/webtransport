@@ -5,13 +5,17 @@
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>cursors</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link
             href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400&display=swap"
             rel="stylesheet"
         >
         <link rel="stylesheet" href="/static/styles.css" />
+        <link rel="prefetch" href="/static/bench.html" as="document" />
+        <link rel="prefetch" href="/static/bench.css" as="style" />
+        <link rel="prefetch" href="/static/bench.js" as="script" />
     </head>
-    <body>
+    <body data-prefetch="/static/bench.html,/static/bench.css,/static/bench.js">
         <nav class="top-nav" aria-label="Primary">
             <a class="nav-link active" href="/">Cursors</a>
             <a class="nav-link" href="/static/bench.html">Benchmark</a>
@@ -27,5 +31,6 @@
         </div>
 
         <script src="/static/main.js"></script>
+        <script src="/static/nav-prefetch.js" defer></script>
     </body>
 </html>

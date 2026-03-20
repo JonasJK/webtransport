@@ -4,9 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WS vs WT Latency</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/bench.css">
+<link rel="prefetch" href="/" as="document" />
+<link rel="prefetch" href="/static/styles.css" as="style" />
+<link rel="prefetch" href="/static/main.js" as="script" />
 </head>
-<body>
+<body data-prefetch="/,/static/styles.css,/static/main.js">
 
 <nav class="top-nav" aria-label="Primary">
   <a class="nav-link" href="/">Cursors</a>
@@ -75,5 +81,6 @@
 </div>
 
 <script src="/static/bench.js"></script>
+<script src="/static/nav-prefetch.js" defer></script>
 </body>
 </html>
