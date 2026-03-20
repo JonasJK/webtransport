@@ -18,12 +18,59 @@ body {
   color: var(--text);
   font-family: 'IBM Plex Sans', sans-serif;
   font-weight: 300;
+  cursor: none;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
   padding: 88px 24px 48px;
   gap: 32px;
+}
+
+#grid-bg,
+#lights-bg {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+#lights-bg {
+  mix-blend-mode: screen;
+}
+
+#self {
+  position: fixed;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 20;
+  box-shadow:
+    0 0 0 1.5px rgba(255, 255, 255, 0.25),
+    0 0 12px rgba(255, 255, 255, 0.4);
+}
+
+#self::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 50%;
+}
+
+.top-nav,
+header,
+.config,
+.config-row,
+.buttons,
+.status,
+.stats-grid,
+.chart-wrap {
+  position: relative;
+  z-index: 5;
 }
 
 .top-nav {
@@ -259,7 +306,7 @@ button {
   margin-bottom: 12px;
 }
 
-canvas {
+.chart-wrap canvas {
   width: 100%;
   height: 140px;
   display: block;
@@ -313,6 +360,15 @@ canvas {
   .nav-link {
     padding: 7px 10px;
     font-size: 0.58rem;
+  }
+}
+
+@media (hover: none) {
+  body {
+    cursor: auto;
+  }
+  #self {
+    display: none;
   }
 }
 
