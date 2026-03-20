@@ -26,7 +26,7 @@ type Client struct {
 	id      uint16
 	session *webtransport.Session
 	sendCh  chan []byte
-
+	closing atomic.Bool
 	rateMu  sync.Mutex
 	counter int64
 	resetAt time.Time
@@ -51,7 +51,13 @@ func (c *Client) sender() {
 	}
 }
 
-var outPool = sync.Pool{New: func() any { b := make([]byte, 7); return &b }}
+func trySend(ch chan []byte, pkt []byte) {
+	defer func() { recover() }()
+	select {
+	case ch <- pkt:
+	default:
+	}
+}
 
 type clientList []*Client
 
@@ -94,13 +100,10 @@ func broadcast(packet []byte, exclude *webtransport.Session) {
 		return
 	}
 	for _, c := range *list {
-		if c.session == exclude {
+		if c.session == exclude || c.closing.Load() {
 			continue
 		}
-		select {
-		case c.sendCh <- packet:
-		default:
-		}
+		trySend(c.sendCh, packet)
 	}
 }
 
@@ -205,7 +208,7 @@ func handleSession(c *Client) {
 
 	defer func() {
 		close(done)
-
+		c.closing.Store(true)
 		clientsMu.Lock()
 		delete(clients, c.session)
 		releaseID(c.id)
@@ -243,8 +246,7 @@ func handleSession(c *Client) {
 				hasPkt = false
 				latestMu.Unlock()
 
-				bp := outPool.Get().(*[]byte)
-				b := *bp
+				b := make([]byte, 7)
 				b[0] = 0x01
 				b[1] = uint8(c.id >> 8)
 				b[2] = uint8(c.id)
@@ -253,7 +255,6 @@ func handleSession(c *Client) {
 				b[5] = uint8(p.y >> 8)
 				b[6] = uint8(p.y)
 				broadcast(b, c.session)
-				outPool.Put(bp)
 			}
 		}
 	}()
