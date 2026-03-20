@@ -1,16 +1,26 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
+	"github.com/tdewolff/minify/v2"
+	"github.com/tdewolff/minify/v2/css"
+	"github.com/tdewolff/minify/v2/js"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -20,7 +30,127 @@ const (
 	rateLimitMax    = 200
 	sendBufSize     = 64
 	broadcastHz     = 20
+
+	domain = "webtransportdemo.duckdns.org"
+	altSvc = `h3=":443"; ma=86400`
 )
+
+var mimeTypes = map[string]string{
+	".html":  "text/html; charset=utf-8",
+	".css":   "text/css; charset=utf-8",
+	".js":    "application/javascript; charset=utf-8",
+	".json":  "application/json",
+	".wasm":  "application/wasm",
+	".ico":   "image/x-icon",
+	".png":   "image/png",
+	".jpg":   "image/jpeg",
+	".jpeg":  "image/jpeg",
+	".svg":   "image/svg+xml",
+	".woff":  "font/woff",
+	".woff2": "font/woff2",
+}
+
+func mimeFor(path string) string {
+	if ct, ok := mimeTypes[strings.ToLower(filepath.Ext(path))]; ok {
+		return ct
+	}
+	return "application/octet-stream"
+}
+
+var minifier = func() *minify.M {
+	m := minify.New()
+	m.AddFunc("application/javascript", js.Minify)
+	m.AddFunc("text/css", css.Minify)
+	return m
+}()
+
+type cachedFile struct {
+	plain       []byte
+	gzipped     []byte
+	etag        string
+	contentType string
+}
+
+var fileCache = map[string]*cachedFile{}
+
+func buildCache(root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		ct := mimeFor(path)
+
+		if ct == "application/javascript; charset=utf-8" || ct == "text/css; charset=utf-8" {
+			// Strip the charset parameter — minify expects bare media types.
+			mediaType := strings.SplitN(ct, ";", 2)[0]
+			if minified, err := minifier.Bytes(mediaType, data); err == nil {
+				data = minified
+			} else {
+				log.Printf("minify %s: %v", path, err)
+			}
+		}
+
+		var gz []byte
+		if strings.HasPrefix(ct, "text/") || strings.Contains(ct, "javascript") ||
+			strings.Contains(ct, "json") || strings.Contains(ct, "wasm") {
+			var buf bytes.Buffer
+			w, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+			w.Write(data)
+			w.Close()
+			if buf.Len() < len(data) {
+				gz = buf.Bytes()
+			}
+		}
+
+		sum := sha256.Sum256(data)
+		cf := &cachedFile{
+			plain:       data,
+			gzipped:     gz,
+			etag:        fmt.Sprintf(`"%x"`, sum[:8]),
+			contentType: ct,
+		}
+
+		rel, _ := filepath.Rel(filepath.Dir(root), path)
+		urlPath := "/" + filepath.ToSlash(rel)
+		fileCache[urlPath] = cf
+		if urlPath == "/static/index.html" {
+			fileCache["/"] = cf
+		}
+		return nil
+	})
+}
+
+func serveFile(w http.ResponseWriter, r *http.Request) {
+	cf := fileCache[r.URL.Path]
+	if cf == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	h := w.Header()
+	h.Set("Content-Type", cf.contentType)
+	h.Set("ETag", cf.etag)
+	h.Set("Cache-Control", "public, max-age=3600")
+
+	if r.Header.Get("If-None-Match") == cf.etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	body := cf.plain
+	if cf.gzipped != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		h.Set("Content-Encoding", "gzip")
+		h.Set("Vary", "Accept-Encoding")
+		body = cf.gzipped
+	}
+	h.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	w.Write(body)
+}
 
 type Client struct {
 	id      uint16
@@ -35,14 +165,13 @@ type Client struct {
 func (c *Client) allowDatagram() bool {
 	now := time.Now()
 	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
 	if now.After(c.resetAt) {
 		c.counter = 0
 		c.resetAt = now.Add(rateLimitPeriod)
 	}
 	c.counter++
-	ok := c.counter <= rateLimitMax
-	c.rateMu.Unlock()
-	return ok
+	return c.counter <= rateLimitMax
 }
 
 func (c *Client) sender() {
@@ -68,9 +197,6 @@ var (
 
 	freeIDs []uint16
 	nextID  uint16 = 1
-
-	staticContent []byte
-	altSvcHeader  string
 )
 
 func allocID() uint16 {
@@ -108,14 +234,9 @@ func broadcast(packet []byte, exclude *webtransport.Session) {
 }
 
 func main() {
-	var err error
-	staticContent, err = os.ReadFile("./static/index.html")
-	if err != nil {
-		log.Fatal("could not read static/index.html:", err)
+	if err := buildCache("./static"); err != nil {
+		log.Fatal("loading static files:", err)
 	}
-
-	domain := "webtransportdemo.duckdns.org"
-	altSvcHeader = `h3=":443"; ma=86400`
 
 	certManager := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
@@ -123,27 +244,20 @@ func main() {
 		Cache:      autocert.DirCache("./certs"),
 	}
 
-	h3TLSConfig := certManager.TLSConfig()
-	h3TLSConfig.NextProtos = append(h3TLSConfig.NextProtos, "h3")
+	h3TLS := certManager.TLSConfig()
+	h3TLS.NextProtos = append(h3TLS.NextProtos, "h3")
+
+	addAltSvc := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Alt-Svc", altSvc)
+			h.ServeHTTP(w, r)
+		})
+	}
+
+	var wtServer webtransport.Server
 
 	mux := http.NewServeMux()
-	wtServer := webtransport.Server{
-		H3: &http3.Server{
-			Addr:      ":443",
-			TLSConfig: h3TLSConfig,
-			Handler:   mux,
-		},
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-	webtransport.ConfigureHTTP3Server(wtServer.H3)
-
-	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Alt-Svc", altSvcHeader)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(staticContent)
-	}
-
-	mux.HandleFunc("/", serveIndex)
+	mux.HandleFunc("/", serveFile)
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -155,60 +269,62 @@ func main() {
 		clientsMu.Unlock()
 		if full {
 			http.Error(w, "server full", http.StatusServiceUnavailable)
-			log.Println("rejected connection: server full")
 			return
 		}
 
 		session, err := wtServer.Upgrade(w, r)
 		if err != nil {
 			log.Printf("upgrade failed: %v", err)
-			http.Error(w, "upgrade failed", http.StatusBadRequest)
 			return
 		}
 
 		clientsMu.Lock()
 		id := allocID()
-		client := &Client{
+		c := &Client{
 			id:      id,
 			session: session,
 			sendCh:  make(chan []byte, sendBufSize),
 			resetAt: time.Now().Add(rateLimitPeriod),
 		}
-		clients[session] = client
+		clients[session] = c
 		updateSnapshot()
 		clientsMu.Unlock()
 
 		log.Println("client connected:", id)
-		go client.sender()
-		go handleSession(client)
+		go c.sender()
+		go handleSession(c)
 	})
 
-	tcpMux := http.NewServeMux()
-	tcpMux.HandleFunc("/", serveIndex)
-	tcpMux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
+	wtServer = webtransport.Server{
+		H3: &http3.Server{
+			Addr:      ":443",
+			TLSConfig: h3TLS,
+			Handler:   addAltSvc(mux),
+		},
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+	webtransport.ConfigureHTTP3Server(wtServer.H3)
 
 	go func() { log.Fatal(http.ListenAndServe(":80", certManager.HTTPHandler(nil))) }()
 	go func() {
 		s := &http.Server{
 			Addr:      ":443",
 			TLSConfig: certManager.TLSConfig(),
-			Handler:   tcpMux,
+			Handler:   addAltSvc(mux),
 		}
 		log.Fatal(s.ListenAndServeTLS("", ""))
 	}()
 
-	log.Printf("Running on https://%s", domain)
+	log.Printf("Listening on https://%s", domain)
 	log.Fatal(wtServer.ListenAndServe())
 }
-
 func handleSession(c *Client) {
 	done := make(chan struct{})
 
 	defer func() {
 		close(done)
 		c.closing.Store(true)
+
 		clientsMu.Lock()
 		delete(clients, c.session)
 		releaseID(c.id)
@@ -246,15 +362,13 @@ func handleSession(c *Client) {
 				hasPkt = false
 				latestMu.Unlock()
 
-				b := make([]byte, 7)
-				b[0] = 0x01
-				b[1] = uint8(c.id >> 8)
-				b[2] = uint8(c.id)
-				b[3] = uint8(p.x >> 8)
-				b[4] = uint8(p.x)
-				b[5] = uint8(p.y >> 8)
-				b[6] = uint8(p.y)
-				broadcast(b, c.session)
+				b := [7]byte{
+					0x01,
+					uint8(c.id >> 8), uint8(c.id),
+					uint8(p.x >> 8), uint8(p.x),
+					uint8(p.y >> 8), uint8(p.y),
+				}
+				broadcast(b[:], c.session)
 			}
 		}
 	}()
@@ -275,9 +389,8 @@ func handleSession(c *Client) {
 		}
 
 		switch msg[0] {
-		case 0x02: // ping
+		case 0x02: // ping — echo verbatim
 			if len(msg) < 9 {
-				log.Printf("ping too short from client %d: %d bytes", c.id, len(msg))
 				continue
 			}
 			pkt := make([]byte, len(msg))
