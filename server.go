@@ -26,17 +26,23 @@ type Client struct {
 	id      uint16
 	session *webtransport.Session
 	sendCh  chan []byte
-	counter atomic.Int64
-	resetAt atomic.Int64
+
+	rateMu  sync.Mutex
+	counter int64
+	resetAt time.Time
 }
 
 func (c *Client) allowDatagram() bool {
-	now := time.Now().UnixNano()
-	if now > c.resetAt.Load() {
-		c.counter.Store(0)
-		c.resetAt.Store(now + int64(rateLimitPeriod))
+	now := time.Now()
+	c.rateMu.Lock()
+	if now.After(c.resetAt) {
+		c.counter = 0
+		c.resetAt = now.Add(rateLimitPeriod)
 	}
-	return c.counter.Add(1) <= rateLimitMax
+	c.counter++
+	ok := c.counter <= rateLimitMax
+	c.rateMu.Unlock()
+	return ok
 }
 
 func (c *Client) sender() {
@@ -44,6 +50,8 @@ func (c *Client) sender() {
 		_ = c.session.SendDatagram(pkt)
 	}
 }
+
+var outPool = sync.Pool{New: func() any { b := make([]byte, 7); return &b }}
 
 type clientList []*Client
 
@@ -70,9 +78,7 @@ func allocID() uint16 {
 	return id
 }
 
-func releaseID(id uint16) {
-	freeIDs = append(freeIDs, id)
-}
+func releaseID(id uint16) { freeIDs = append(freeIDs, id) }
 
 func updateSnapshot() {
 	list := make(clientList, 0, len(clients))
@@ -98,11 +104,6 @@ func broadcast(packet []byte, exclude *webtransport.Session) {
 	}
 }
 
-type latestPos struct {
-	mu  sync.Mutex
-	pkt []byte
-}
-
 func main() {
 	var err error
 	staticContent, err = os.ReadFile("./static/index.html")
@@ -123,7 +124,6 @@ func main() {
 	h3TLSConfig.NextProtos = append(h3TLSConfig.NextProtos, "h3")
 
 	mux := http.NewServeMux()
-
 	wtServer := webtransport.Server{
 		H3: &http3.Server{
 			Addr:      ":443",
@@ -132,28 +132,29 @@ func main() {
 		},
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
-
 	webtransport.ConfigureHTTP3Server(wtServer.H3)
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	serveIndex := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Alt-Svc", altSvcHeader)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(staticContent)
-	})
-	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+	}
+
+	mux.HandleFunc("/", serveIndex)
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/wt", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("/wt hit: method=%s proto=%s", r.Method, r.Proto)
 
 		clientsMu.Lock()
-		if len(clients) >= maxClients {
-			clientsMu.Unlock()
+		full := len(clients) >= maxClients
+		clientsMu.Unlock()
+		if full {
 			http.Error(w, "server full", http.StatusServiceUnavailable)
 			log.Println("rejected connection: server full")
 			return
 		}
-		clientsMu.Unlock()
 
 		session, err := wtServer.Upgrade(w, r)
 		if err != nil {
@@ -168,8 +169,8 @@ func main() {
 			id:      id,
 			session: session,
 			sendCh:  make(chan []byte, sendBufSize),
+			resetAt: time.Now().Add(rateLimitPeriod),
 		}
-		client.resetAt.Store(time.Now().Add(rateLimitPeriod).UnixNano())
 		clients[session] = client
 		updateSnapshot()
 		clientsMu.Unlock()
@@ -180,18 +181,12 @@ func main() {
 	})
 
 	tcpMux := http.NewServeMux()
-	tcpMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Alt-Svc", altSvcHeader)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(staticContent)
-	})
-	tcpMux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+	tcpMux.HandleFunc("/", serveIndex)
+	tcpMux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	go func() {
-		log.Fatal(http.ListenAndServe(":80", certManager.HTTPHandler(nil)))
-	}()
+	go func() { log.Fatal(http.ListenAndServe(":80", certManager.HTTPHandler(nil))) }()
 	go func() {
 		s := &http.Server{
 			Addr:      ":443",
@@ -206,7 +201,11 @@ func main() {
 }
 
 func handleSession(c *Client) {
+	done := make(chan struct{})
+
 	defer func() {
+		close(done)
+
 		clientsMu.Lock()
 		delete(clients, c.session)
 		releaseID(c.id)
@@ -221,31 +220,41 @@ func handleSession(c *Client) {
 
 	type pos struct{ x, y uint16 }
 	var (
-		latest   pos
-		hasPkt   atomic.Bool
 		latestMu sync.Mutex
+		latest   pos
+		hasPkt   bool
 	)
 
 	ticker := time.NewTicker(time.Second / broadcastHz)
 	defer ticker.Stop()
 
 	go func() {
-		for range ticker.C {
-			if !hasPkt.Load() {
-				continue
-			}
-			latestMu.Lock()
-			p := latest
-			latestMu.Unlock()
-			hasPkt.Store(false)
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				latestMu.Lock()
+				if !hasPkt {
+					latestMu.Unlock()
+					continue
+				}
+				p := latest
+				hasPkt = false
+				latestMu.Unlock()
 
-			out := []byte{
-				0x01,
-				uint8(c.id >> 8), uint8(c.id),
-				uint8(p.x >> 8), uint8(p.x),
-				uint8(p.y >> 8), uint8(p.y),
+				bp := outPool.Get().(*[]byte)
+				b := *bp
+				b[0] = 0x01
+				b[1] = uint8(c.id >> 8)
+				b[2] = uint8(c.id)
+				b[3] = uint8(p.x >> 8)
+				b[4] = uint8(p.x)
+				b[5] = uint8(p.y >> 8)
+				b[6] = uint8(p.y)
+				broadcast(b, c.session)
+				outPool.Put(bp)
 			}
-			broadcast(out, c.session)
 		}
 	}()
 
@@ -265,17 +274,19 @@ func handleSession(c *Client) {
 		}
 
 		switch msg[0] {
-		case 0x02:
+		case 0x02: // ping
 			if len(msg) < 9 {
 				log.Printf("ping too short from client %d: %d bytes", c.id, len(msg))
 				continue
 			}
+			pkt := make([]byte, len(msg))
+			copy(pkt, msg)
 			select {
-			case c.sendCh <- msg:
+			case c.sendCh <- pkt:
 			default:
 			}
 
-		case 0x01:
+		case 0x01: // position update
 			if len(msg) < 5 {
 				continue
 			}
@@ -284,8 +295,8 @@ func handleSession(c *Client) {
 				x: uint16(msg[1])<<8 | uint16(msg[2]),
 				y: uint16(msg[3])<<8 | uint16(msg[4]),
 			}
+			hasPkt = true
 			latestMu.Unlock()
-			hasPkt.Store(true)
 		}
 	}
 }
