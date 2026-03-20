@@ -122,11 +122,23 @@ func buildCache(root string) error {
 		if urlPath == "/static/index.html" {
 			fileCache["/"] = cf
 		}
+		if urlPath == "/static/bench.html" {
+			fileCache["/bench"] = cf
+		}
 		return nil
 	})
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/static/") {
+		dest := strings.ToLower(r.Header.Get("Sec-Fetch-Dest"))
+		mode := strings.ToLower(r.Header.Get("Sec-Fetch-Mode"))
+		if dest == "document" || mode == "navigate" {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
 	cf := fileCache[r.URL.Path]
 	if cf == nil {
 		http.NotFound(w, r)
