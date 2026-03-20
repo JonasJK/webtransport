@@ -6,6 +6,8 @@
   --bg: #0a0a0a;
   --surface: #111;
   --border: #222;
+  --nav-bg: rgba(16, 16, 16, 0.78);
+  --nav-border: #2a2a2a;
   --ws: #00c2ff;
   --wt: #ff6b35;
   --muted: #444;
@@ -22,8 +24,47 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 48px 24px;
+  padding: 88px 24px 48px;
   gap: 32px;
+}
+
+.top-nav {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--nav-border);
+  border-radius: 999px;
+  background: var(--nav-bg);
+  backdrop-filter: blur(12px);
+  z-index: 10;
+}
+
+.nav-link {
+  text-decoration: none;
+  color: var(--sub);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.nav-link:hover {
+  color: var(--text);
+  border-color: #333;
+}
+
+.nav-link.active {
+  color: var(--text);
+  border-color: #3a3a3a;
+  background: #1a1a1a;
 }
 
 header {
@@ -263,6 +304,19 @@ canvas {
 }
 
 .buttons { display: flex; gap: 12px; }
+
+@media (max-width: 640px) {
+  body {
+    padding-top: 78px;
+  }
+  .top-nav {
+    top: 14px;
+  }
+  .nav-link {
+    padding: 7px 10px;
+    font-size: 0.58rem;
+  }
+}
 
 input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 input[type=number]::-webkit-inner-spin-button,

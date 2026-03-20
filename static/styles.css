@@ -8,6 +8,8 @@
     --bg: #111110;
     --hud-bg: rgba(20, 20, 19, 0.75);
     --hud-border: rgba(255, 255, 255, 0.07);
+    --nav-bg: rgba(17, 17, 16, 0.72);
+    --nav-border: rgba(255, 255, 255, 0.12);
     --text-dim: rgba(255, 255, 255, 0.3);
     --text: rgba(255, 255, 255, 0.85);
 }
@@ -19,6 +21,45 @@ html, body {
     overflow: hidden;
     cursor: none;
     font-family: "DM Mono", monospace;
+}
+
+.top-nav {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    padding: 6px;
+    border: 1px solid var(--nav-border);
+    background: var(--nav-bg);
+    backdrop-filter: blur(14px);
+    border-radius: 999px;
+    z-index: 360;
+}
+
+.nav-link {
+    text-decoration: none;
+    color: var(--text-dim);
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    transition: color 0.18s, border-color 0.18s,
+        background-color 0.18s;
+}
+
+.nav-link:hover {
+    color: var(--text);
+    border-color: var(--hud-border);
+}
+
+.nav-link.active {
+    color: var(--text);
+    border-color: var(--nav-border);
+    background: rgba(255, 255, 255, 0.06);
 }
 
 canvas {
@@ -116,6 +157,16 @@ canvas {
     }
     html, body {
         cursor: auto;
+    }
+}
+
+@media (max-width: 640px) {
+    .top-nav {
+        top: 14px;
+    }
+    .nav-link {
+        font-size: 9px;
+        padding: 7px 11px;
     }
 }
 
